@@ -1,0 +1,15 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "echo workspace",
+        "type": "shell",
+        "command": "echo ${workspaceFolder}"
+      },
+      {
+        "label": "echo home",
+        "type": "shell",
+        "command": "echo ${userHome}"
+      }
+    ]
+  }
