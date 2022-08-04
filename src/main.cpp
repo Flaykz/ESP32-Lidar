@@ -30,7 +30,7 @@ TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 #define BAUD_RATE 115200
 #define FONT_H tft.fontHeight()
 #define FONT_W tft.fontHeight()
-#define WDT_TIMEOUT_SECONDS 20 // Timeout in seconds
+#define WDT_TIMEOUT_SECONDS 20 // Timeout in seconds for watchdog
 #define ONE_SECOND_US 1000000 // Une seconde en us
 #define ONE_SECOND_MS 1000 // Une seconde en ms
 #define OBTURATION_TIME_US 20*ONE_SECOND_US // in us
@@ -42,6 +42,7 @@ TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 #define CHARACTERISTIC_ISO_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define CHARACTERISTIC_TRIGGER_COUNT_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a9"
 #define CHARACTERISTIC_LOOPS_COUNT_UUID "beb5483e-36e1-4688-b7f5-ea07361b26aa"
+#define CHARACTERISTIC_IS_ON_UUID "beb5483e-36e1-4688-b7f5-ea07361b26ab"
 
 TFMPlus lidar1;
 TFMPlus lidar2;
@@ -51,6 +52,7 @@ BLEServer* pServer = NULL;
 BLECharacteristic* pCharacteristicIso = NULL;
 BLECharacteristic* pCharacteristicTriggerCount = NULL;
 BLECharacteristic* pCharacteristicLoopsCount = NULL;
+BLECharacteristic* pCharacteristicIsOn = NULL;
 
 long loopCount = 0; // count nb of loop in one second
 long currentMicros = 0;
@@ -59,8 +61,10 @@ long lastLoopMicros = 0;
 long currentMillis = 0;
 long lastFlashTime = 0; // Si > 25min, on lance flash pour eviter mise en veille
 int cameraId = 0; // 0 = declenchement timer (pas connecté au wifi), > 0 declenchement bulb (connecté à camera 1 ou 2)
+
 String defaultIso = "200"; // default iso
 boolean handleCameraBulb = false;
+boolean isOn = true;
 
 hw_timer_t * timer = NULL;
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
@@ -116,9 +120,23 @@ class MyTriggerCountCallbacks: public BLECharacteristicCallbacks {
         for (int i = 0; i < characteristicValue.length(); i++) {
           value = value + characteristicValue[i];          
         }
-        Serial.print("TriggerCount = ");
         Serial.println(value);
      }
+    }
+};
+
+class MyIsOnCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      uint8_t *characteristicValue = pCharacteristic->getData();
+      uint8_t value = characteristicValue[0] - '0';
+      Serial.println(*characteristicValue, HEX);
+      if (value == 1) {
+        isOn = true;
+        Serial.println("Activation du système");
+      } else {
+        isOn = false;
+        Serial.println("Désactivation du système");
+      }
     }
 };
 
@@ -313,6 +331,11 @@ void initBle() {
                                             BLECharacteristic::PROPERTY_WRITE |
                                             BLECharacteristic::PROPERTY_NOTIFY
                                             );
+    pCharacteristicIsOn = pService->createCharacteristic(
+                                            CHARACTERISTIC_IS_ON_UUID,
+                                            BLECharacteristic::PROPERTY_READ |
+                                            BLECharacteristic::PROPERTY_WRITE
+                                            );
     // https://www.bluetooth.com/specifications/gatt/viewer?
     //   attributeXmlFile=org.bluetooth.descriptor.gatt.client_characteristic_configuration.xml
     // Create a BLE Descriptor
@@ -321,12 +344,18 @@ void initBle() {
     pCharacteristicIso->setValue(defaultIso.c_str());
 
     pCharacteristicTriggerCount->addDescriptor(new BLE2902());
+    pCharacteristicTriggerCount->setNotifyProperty(true);
     pCharacteristicTriggerCount->setCallbacks(new MyTriggerCountCallbacks());
     pCharacteristicTriggerCount->setValue("0");
 
     pCharacteristicLoopsCount->addDescriptor(new BLE2902());
+    pCharacteristicLoopsCount->setNotifyProperty(true);
     pCharacteristicLoopsCount->setCallbacks(new MyTriggerCountCallbacks());
     pCharacteristicLoopsCount->setValue("0");
+
+    pCharacteristicIsOn->addDescriptor(new BLE2902());
+    pCharacteristicIsOn->setCallbacks(new MyIsOnCallbacks());
+    pCharacteristicIsOn->setValue(isOn ? "1" : "0");
 
     pService->start();
 
@@ -385,15 +414,17 @@ void loop()
     currentMicros = micros();
     esp_task_wdt_reset();  //reset watchdog
 
-    if (handleCameraBulb and enableTrigger > 0) // Temps exposition atteint
+    if (handleCameraBulb and enableTrigger > 0 and isOn) // Temps exposition atteint
     {
         resetBulb();
         enableTrigger = 0;
     }
-    //showDistance();
-    refreshLidarData(); // get latest data for lidar 1 and 2
 
-    if (isDistanceChange() and (currentMillis - lastFlashTime >= MIN_TIME_BETWEEN_FLASH_MS)) {
+    if (isOn) {
+        refreshLidarData(); // get latest data for lidar 1 and 2
+    }
+
+    if (isDistanceChange() and (currentMillis - lastFlashTime >= MIN_TIME_BETWEEN_FLASH_MS) and isOn) {
         triggerCameraFlash();
         showDistance();
     }
@@ -402,14 +433,14 @@ void loop()
         triggerCameraFlash();
 	}
 
-    if (ACTIVE_BLUETOOTH) {
-        if (micros() - lastLoopMicros > 1000000) {
-            // Serial.print("number of loop in one second: ");
-            // Serial.println(loopCount);
+    if (micros() - lastLoopMicros > 1000000) {
+        // Serial.print("number of loop in one second: ");
+        // Serial.println(loopCount);
+        if (ACTIVE_BLUETOOTH) {
             pCharacteristicLoopsCount->setValue(String(loopCount).c_str());
             pCharacteristicLoopsCount->notify();
-            lastLoopMicros = micros();
-            loopCount = 0;
         }
+        lastLoopMicros = micros();
+        loopCount = 0;
     }
 }
