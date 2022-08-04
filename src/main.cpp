@@ -39,10 +39,16 @@ TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 
 // params BLE
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define SERVICE_CALIBRATION_UUID "4fafc201-1fb5-459e-8fcc-c5c9c3319130"
 #define CHARACTERISTIC_ISO_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define CHARACTERISTIC_TRIGGER_COUNT_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a9"
 #define CHARACTERISTIC_LOOPS_COUNT_UUID "beb5483e-36e1-4688-b7f5-ea07361b26aa"
 #define CHARACTERISTIC_IS_ON_UUID "beb5483e-36e1-4688-b7f5-ea07361b26ab"
+#define CHARACTERISTIC_CALIBRATION_TIME_UUID "beb5483e-36e1-4688-b7f5-ea07361b26ac"
+#define CHARACTERISTIC_CALIBRATION_A_UUID "beb5483e-36e1-4688-b7f5-ea07361b26ad"
+#define CHARACTERISTIC_CALIBRATION_B_UUID "beb5483e-36e1-4688-b7f5-ea07361b26ae"
+#define CHARACTERISTIC_CALIBRATION_RESTART_UUID "beb5483e-36e1-4688-b7f5-ea07361b26af"
+
 
 TFMPlus lidar1;
 TFMPlus lidar2;
@@ -53,6 +59,11 @@ BLECharacteristic* pCharacteristicIso = NULL;
 BLECharacteristic* pCharacteristicTriggerCount = NULL;
 BLECharacteristic* pCharacteristicLoopsCount = NULL;
 BLECharacteristic* pCharacteristicIsOn = NULL;
+BLECharacteristic* pCharacteristicCalibrationTime = NULL;
+BLECharacteristic* pCharacteristicCalibrationA = NULL;
+BLECharacteristic* pCharacteristicCalibrationB = NULL;
+BLECharacteristic* pCharacteristicCalibrationRestart = NULL;
+
 
 long loopCount = 0; // count nb of loop in one second
 long currentMicros = 0;
@@ -63,6 +74,10 @@ long lastFlashTime = 0; // Si > 25min, on lance flash pour eviter mise en veille
 int cameraId = 0; // 0 = declenchement timer (pas connecté au wifi), > 0 declenchement bulb (connecté à camera 1 ou 2)
 
 String defaultIso = "200"; // default iso
+uint16_t defaultLidarCalibrationTimeMs = 10000;
+uint8_t defaultLidarCalibrationA = 1; // a in ax + b
+uint8_t defaultLidarCalibrationB = 1; // b in ax + b
+boolean shouldRecalibrateLidar = false;
 boolean handleCameraBulb = false;
 boolean isOn = true;
 
@@ -78,6 +93,68 @@ int16_t distance1, lastDistance1, distance2, lastDistance2 = 0;    // Distance t
 int16_t signalQuality1, lastSignalQuality1, signalQuality2, lastSignalQuality2 = 0;    // Strength or quality of return signal
 int16_t temperature1, temperature2 = 0;    // Internal temperature of Lidar sensor chip
 int16_t minDistance, maxDistance, minQuality, maxQuality, diffDistance, diffQuality; // For lidar calibration
+
+String getCharacteristicStringValue(BLECharacteristic *pCharacteristic) {
+    std::string characteristicValue = pCharacteristic->getValue();
+      String value = "";
+      if (characteristicValue.length() > 0) {
+        for (int i = 0; i < characteristicValue.length(); i++) {
+          value = value + characteristicValue[i];          
+        }
+        Serial.println(value);
+     }
+     return value;
+}
+
+void setMinMaxLidarData() {
+    minDistance = distance1;
+    maxDistance = distance1;
+}
+
+void refreshMinMaxLidarData() {
+    minDistance = min(distance1, minDistance);
+    minDistance = min(distance2, minDistance);
+    maxDistance = max(distance1, maxDistance);
+    maxDistance = max(distance2, maxDistance);
+}
+
+void refreshLidarData() {
+    lastDistance1 = distance1;
+    lastDistance2 = distance2;
+    lastSignalQuality1 = signalQuality1;
+    lastSignalQuality2 = signalQuality2;
+
+    lidar1.getData(distance1, signalQuality1, temperature1);
+    lidar2.getData(distance2, signalQuality2, temperature2);
+}
+
+void calibrateLidar() {
+    currentMillis = millis();
+    Serial.println("Etalonnage du lidar pendant 10 sec...");
+    refreshLidarData();
+    setMinMaxLidarData();
+    while (millis() - currentMillis <= defaultLidarCalibrationTimeMs) {
+        refreshLidarData();
+        refreshMinMaxLidarData();
+        esp_task_wdt_reset();
+    }
+    diffDistance = maxDistance - minDistance;
+    Serial.println("Etalonnage du lidar terminé");
+    Serial.print("Distance min/max: ");
+    Serial.print(minDistance);
+    Serial.print("/");
+    Serial.println(maxDistance);
+
+    minDistance -= (diffDistance * defaultLidarCalibrationA) + defaultLidarCalibrationB;
+
+    Serial.print("Seuil déclenchement distance min: ");
+    Serial.println(minDistance);
+    if (minDistance < 0) {
+        Serial.println("Probleme lors de l'étalonnage, redémarrage de celui-ci");
+        calibrateLidar();
+    }
+}
+
 
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
@@ -111,17 +188,36 @@ class MyIsoCallbacks: public BLECharacteristicCallbacks {
     }
 };
 
-class MyTriggerCountCallbacks: public BLECharacteristicCallbacks {
+class MyStringCallback: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
-      std::string characteristicValue = pCharacteristic->getValue();
-      
-      if (characteristicValue.length() > 0) {
-        String value = "";
-        for (int i = 0; i < characteristicValue.length(); i++) {
-          value = value + characteristicValue[i];          
-        }
-        Serial.println(value);
-     }
+      getCharacteristicStringValue(pCharacteristic);
+    }
+};
+
+class MyLidarCalibrationTimeCallback: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      String value = getCharacteristicStringValue(pCharacteristic);
+      defaultLidarCalibrationTimeMs = value.toInt();
+    }
+};
+
+class MyLidarCalibrationACallback: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      String value = getCharacteristicStringValue(pCharacteristic);
+      defaultLidarCalibrationA = value.toInt();
+    }
+};
+
+class MyLidarCalibrationBCallback: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      String value = getCharacteristicStringValue(pCharacteristic);
+      defaultLidarCalibrationB = value.toInt();
+    }
+};
+
+class MyLidarCalibrationRestartCallback: public BLECharacteristicCallbacks {
+    void onRead(BLECharacteristic *pCharacteristic) {
+        shouldRecalibrateLidar = true;
     }
 };
 
@@ -219,77 +315,14 @@ void initSerialTerminal() {
     delay(20);               // Give port time to initalize
 }
 
-void setMinMaxLidarData() {
-    minDistance = distance1;
-    maxDistance = distance1;
-    minQuality = signalQuality1;
-    maxQuality = signalQuality1;
-}
-
-void refreshMinMaxLidarData() {
-    minDistance = min(distance1, minDistance);
-    minDistance = min(distance2, minDistance);
-    minQuality = min(signalQuality1, minQuality);
-    minQuality = min(signalQuality2, minQuality);
-    maxDistance = max(distance1, maxDistance);
-    maxDistance = max(distance2, maxDistance);
-    maxQuality = max(signalQuality1, maxQuality);
-    maxQuality = max(signalQuality2, maxQuality);
-}
-
-void refreshLidarData() {
-    lastDistance1 = distance1;
-    lastDistance2 = distance2;
-    lastSignalQuality1 = signalQuality1;
-    lastSignalQuality2 = signalQuality2;
-
-    lidar1.getData(distance1, signalQuality1, temperature1);
-    lidar2.getData(distance2, signalQuality2, temperature2);
-}
-
-void calibrateLidar() {
-    Serial.println("Etalonnage du lidar pendant 10 sec...");
-    currentMillis = millis();
-    refreshLidarData();
-    setMinMaxLidarData();
-    while (millis() - currentMillis <= 2000) { //Permet de stabiliser les valeurs mesurées
-        refreshLidarData();
-    }
-    while (millis() - currentMillis <= 10000) {
-        refreshLidarData();
-        refreshMinMaxLidarData();
-    }
-    diffDistance = maxDistance - minDistance;
-    diffQuality = maxQuality - minQuality;
-    Serial.println("Etalonnage du lidar terminé");
-    Serial.print("Distance min/max: ");
-    Serial.print(minDistance);
-    Serial.print("/");
-    Serial.println(maxDistance);
-    Serial.print("Quality min/max: ");
-    Serial.print(minQuality);
-    Serial.print("/");
-    Serial.println(maxQuality);
-
-    minDistance -= (diffDistance) + 1;
-    minQuality -= (diffQuality) + 1;
-    maxQuality += (diffQuality) + 1;
-
-    Serial.print("Seuil déclenchement distance min: ");
-    Serial.println(minDistance);
-    Serial.print("Seuil déclenchement quality min/max: ");
-    Serial.print(minQuality);
-    Serial.print("/");
-    Serial.println(maxQuality);
-    if (minDistance < 0) {
-        Serial.println("Probleme lors de l'étalonnage, redémarrage de celui-ci");
-        calibrateLidar();
-    }
-}
-
 void initLidar() {
     lidar1.init(LIDAR_1, true, RX_D1, TX_D1);
     lidar2.init(LIDAR_2, true, RX_D2, TX_D2);
+
+    currentMillis = millis();
+    while (millis() - currentMillis <= 2000) { //Permet de stabiliser les valeurs mesurées
+        refreshLidarData();
+    }
 
     calibrateLidar();
 }
@@ -304,7 +337,6 @@ void initFlash() {
 
 boolean isDistanceChange() {
     return distance1 <= minDistance or distance2 <= minDistance;
-    //or signalQuality1 >= maxQuality or signalQuality1 <= minQuality or signalQuality2 >= maxQuality or signalQuality2 <= minQuality;
 }
 
 void initBle() {
@@ -312,6 +344,8 @@ void initBle() {
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
     BLEService *pService = pServer->createService(SERVICE_UUID);
+    BLEService *pServiceCalibration = pServer->createService(SERVICE_CALIBRATION_UUID);
+
     // Create a BLE Characteristic
     pCharacteristicIso = pService->createCharacteristic(
                                             CHARACTERISTIC_ISO_UUID,
@@ -336,6 +370,26 @@ void initBle() {
                                             BLECharacteristic::PROPERTY_READ |
                                             BLECharacteristic::PROPERTY_WRITE
                                             );
+    pCharacteristicCalibrationTime = pServiceCalibration->createCharacteristic(
+                                            CHARACTERISTIC_CALIBRATION_TIME_UUID,
+                                            BLECharacteristic::PROPERTY_READ |
+                                            BLECharacteristic::PROPERTY_WRITE
+                                            );
+    pCharacteristicCalibrationA = pServiceCalibration->createCharacteristic(
+                                            CHARACTERISTIC_CALIBRATION_A_UUID,
+                                            BLECharacteristic::PROPERTY_READ |
+                                            BLECharacteristic::PROPERTY_WRITE
+                                            );
+    pCharacteristicCalibrationB = pServiceCalibration->createCharacteristic(
+                                            CHARACTERISTIC_CALIBRATION_B_UUID,
+                                            BLECharacteristic::PROPERTY_READ |
+                                            BLECharacteristic::PROPERTY_WRITE
+                                            );
+    pCharacteristicCalibrationRestart = pServiceCalibration->createCharacteristic(
+                                            CHARACTERISTIC_CALIBRATION_RESTART_UUID,
+                                            BLECharacteristic::PROPERTY_READ |
+                                            BLECharacteristic::PROPERTY_WRITE
+                                            );
     // https://www.bluetooth.com/specifications/gatt/viewer?
     //   attributeXmlFile=org.bluetooth.descriptor.gatt.client_characteristic_configuration.xml
     // Create a BLE Descriptor
@@ -345,23 +399,41 @@ void initBle() {
 
     pCharacteristicTriggerCount->addDescriptor(new BLE2902());
     pCharacteristicTriggerCount->setNotifyProperty(true);
-    pCharacteristicTriggerCount->setCallbacks(new MyTriggerCountCallbacks());
+    pCharacteristicTriggerCount->setCallbacks(new MyStringCallback());
     pCharacteristicTriggerCount->setValue("0");
 
     pCharacteristicLoopsCount->addDescriptor(new BLE2902());
     pCharacteristicLoopsCount->setNotifyProperty(true);
-    pCharacteristicLoopsCount->setCallbacks(new MyTriggerCountCallbacks());
+    pCharacteristicLoopsCount->setCallbacks(new MyStringCallback());
     pCharacteristicLoopsCount->setValue("0");
 
     pCharacteristicIsOn->addDescriptor(new BLE2902());
     pCharacteristicIsOn->setCallbacks(new MyIsOnCallbacks());
     pCharacteristicIsOn->setValue(isOn ? "1" : "0");
 
+    pCharacteristicCalibrationTime->addDescriptor(new BLE2902());
+    pCharacteristicCalibrationTime->setCallbacks(new MyLidarCalibrationTimeCallback());
+    pCharacteristicCalibrationTime->setValue(String(defaultLidarCalibrationTimeMs).c_str());
+
+    pCharacteristicCalibrationA->addDescriptor(new BLE2902());
+    pCharacteristicCalibrationA->setCallbacks(new MyLidarCalibrationACallback());
+    pCharacteristicCalibrationA->setValue(String(defaultLidarCalibrationA).c_str());
+
+    pCharacteristicCalibrationB->addDescriptor(new BLE2902());
+    pCharacteristicCalibrationB->setCallbacks(new MyLidarCalibrationBCallback());
+    pCharacteristicCalibrationB->setValue(String(defaultLidarCalibrationB).c_str());
+
+    pCharacteristicCalibrationRestart->addDescriptor(new BLE2902());
+    pCharacteristicCalibrationRestart->setCallbacks(new MyLidarCalibrationRestartCallback());
+    pCharacteristicCalibrationRestart->setValue("0");
+
     pService->start();
+    pServiceCalibration->start();
 
     // Start advertising
     BLEAdvertising *pAdvertising = pServer->getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
+    pAdvertising->addServiceUUID(SERVICE_CALIBRATION_UUID);
     pAdvertising->setScanResponse(false);
     pAdvertising->setMinPreferred(0x0);  // set value to 0x00 to not advertise this parameter
     BLEDevice::startAdvertising();
@@ -413,6 +485,11 @@ void loop()
     currentMillis = millis();
     currentMicros = micros();
     esp_task_wdt_reset();  //reset watchdog
+
+    if (shouldRecalibrateLidar) {
+        calibrateLidar();
+        shouldRecalibrateLidar = false;
+    }
 
     if (handleCameraBulb and enableTrigger > 0 and isOn) // Temps exposition atteint
     {
