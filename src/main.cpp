@@ -129,6 +129,7 @@ void refreshLidarData() {
 }
 
 void calibrateLidar() {
+    // TODO Calibrer par lidar
     currentMillis = millis();
     Serial.println("Etalonnage du lidar pendant 10 sec...");
     refreshLidarData();
