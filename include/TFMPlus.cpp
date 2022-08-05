@@ -351,7 +351,6 @@ void TFMPlus::init(int lidarId, boolean highRate, int rx, int tx) {
 
     // Send some example commands to the TFMini-Plus
     // - - Perform a system reset - - - - - - - - - - -
-    delay(3000);
     Serial.println( "System reset: ");
     if( sendCommand( SYSTEM_RESET, 0))
     {
