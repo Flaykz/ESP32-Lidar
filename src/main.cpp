@@ -26,7 +26,7 @@ TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 #define LIDAR_2 2
 
 // params
-#define ACTIVE_BLUETOOTH true
+#define ACTIVE_BLUETOOTH false
 #define BAUD_RATE 115200
 #define FONT_H tft.fontHeight()
 #define FONT_W tft.fontHeight()
@@ -80,9 +80,9 @@ long lastFlashTime = 0; // Si > 25min, on lance flash pour eviter mise en veille
 int cameraId = 0; // 0 = declenchement timer (pas connecté au wifi), > 0 declenchement bulb (connecté à camera 1 ou 2)
 
 String defaultIso = "200"; // default iso
-uint16_t defaultLidarCalibrationTimeMs = 10000;
+uint16_t defaultLidarCalibrationTimeMs = 1000;
 uint8_t defaultLidarCalibrationA = 1; // a in ax + b
-uint8_t defaultLidarCalibrationB = 1; // b in ax + b
+uint8_t defaultLidarCalibrationB = 10; // b in ax + b
 boolean shouldRecalibrateLidar = false;
 boolean handleCameraBulb = false;
 boolean isOn = true;
@@ -261,7 +261,7 @@ class MyIsOnCallbacks: public BLECharacteristicCallbacks {
 void IRAM_ATTR onTime() {
     enableTrigger++;
     timerAlarmDisable(timer);
-    printf( "timer restarted\r\n");
+    Serial.println( "timer restarted");
     //tft.drawString("           ", FONT_W*3, FONT_H*4);
 }
 
@@ -289,8 +289,12 @@ void resetBulb() {
     stopBulb(cameraId);
     getEvent(cameraId);
     startBulb(cameraId);
-    timerAlarmEnable(timer);
-    timerRestart(timer);
+    if (handleCameraBulb) {
+        Serial.println("timerAlarmEnable");
+        timerAlarmEnable(timer);
+        Serial.println("timerRestart");
+        timerRestart(timer);
+    }
 }
 
 void triggerCameraFlash() {
@@ -300,14 +304,17 @@ void triggerCameraFlash() {
 
     if (handleCameraBulb) {
         resetBulb();
-        enableTrigger = 0;
     }
+
+    enableTrigger = 0;
 
     triggerCount++;
 
     if (ACTIVE_BLUETOOTH) {
+        Serial.println("ACTIVE_BLUETOOTH");
         pCharacteristicTriggerCount->setValue(String(triggerCount).c_str());
         pCharacteristicTriggerCount->notify();
+        Serial.println("END BLUETOOTH");
     }
 
     printf("Declenchement n° %u\r\n", triggerCount);
@@ -529,15 +536,19 @@ void loop()
 
     if (handleCameraBulb and enableTrigger > 0 and isOn) // Temps exposition atteint
     {
+        Serial.println("Fin du bulb max, reset");
         resetBulb();
         enableTrigger = 0;
     }
+
+    esp_task_wdt_reset();  //reset watchdog
 
     if (isOn) {
         refreshLidarData(); // get latest data for lidar 1 and 2
     }
 
-    if (isDistanceChange() and (currentMillis - lastFlashTime >= MIN_TIME_BETWEEN_FLASH_MS) and isOn) {
+    if (isDistanceChange() and isOn and currentMillis - lastFlashTime >= MIN_TIME_BETWEEN_FLASH_MS) {
+        Serial.println("change distance");
         triggerCameraFlash();
         showDistance();
     }

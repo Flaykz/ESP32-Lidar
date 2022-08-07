@@ -17,6 +17,8 @@ String sonyUrl = "/sony/camera";
 const char* host = "192.168.122.1";   // fixed IP of camera
 const int httpPort = 8080;
 
+boolean isBulbActive = false;
+
 WiFiClient wifiClient;
 
 const String buildJsonConfig(String paramName, String params) {
@@ -50,12 +52,15 @@ void httpPost(const String jString, int cameraId) {
 
   unsigned long lastmillis;
   lastmillis = millis();
+
+  // if (jString.indexOf("startBulbShooting") <= 0) {
+  // }
   while (!wifiClient.available() && millis() - lastmillis < WIFI_TIMEOUT) {} // wait 8s max for answer
  
-  // Read all the lines of the reply from server and print them to Serial
+  // // Read all the lines of the reply from server and print them to Serial
   while (wifiClient.available()) {
     String line = wifiClient.readStringUntil('\r');
-    Serial.println(line);
+    // Serial.println(line);
   }
 
   wifiClient.stop();
@@ -66,7 +71,7 @@ boolean connectToWifi(const char* ssid, const char* password) {
   WiFi.begin(ssid, password);
 
   int n = 0;
-  while (WiFi.status() != WL_CONNECTED and n <= 5) {   // wait for WiFi connection
+  while (WiFi.status() != WL_CONNECTED and n <= 3) {   // wait for WiFi connection
     delay(1000);
     n = n + 1;
     Serial.print(".");
@@ -173,15 +178,25 @@ void takePicture(int cameraId)
 
 void startBulb(int cameraId)
 {
-  httpPost(buildJsonConfig("startBulbShooting", ""), cameraId);
+  if (!isBulbActive) {
+    Serial.println("startBulb");
+    httpPost(buildJsonConfig("startBulbShooting", ""), cameraId);
+    Serial.println("startBulb ended");
+  }
+  isBulbActive = true;
 }
 
 void stopBulb(int cameraId)
 {
-  httpPost(buildJsonConfig("stopBulbShooting", ""), cameraId);
+  if (isBulbActive) {
+    Serial.println("stopBulb");
+    httpPost(buildJsonConfig("stopBulbShooting", ""), cameraId);
+  }
+  isBulbActive = false;
 }
 
 void getEvent(int cameraId)
 {
-  httpPost(buildJsonConfig("getEvent", "[true]"), cameraId);
+  Serial.println("getEvent");
+  httpPost(buildJsonConfig("getEvent", "true"), cameraId);
 }
